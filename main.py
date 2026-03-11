@@ -1,10 +1,16 @@
 import sys
 import PyQt6 
-from PyQt6.QtWidgets import QApplication,QMainWindow,QLabel,QVBoxLayout,QWidget,QHBoxLayout,QPushButton,QFrame,QLabel
-from PyQt6.QtCore import Qt
+import os
+from PyQt6 import QtCore
+from PyQt6.QtWidgets import QApplication, QListWidget,QMainWindow,QLabel, QStackedWidget,QVBoxLayout,QWidget,QHBoxLayout,QPushButton,QFrame,QLabel,QListWidgetItem
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap,QIcon
 
 #drag and drop images onto the canvas to add them to the vault
 class DropCanvas(QFrame):
+    
+    folder_dropped=pyqtSignal(str,str)
+    
     #canvas for image grid
     def __init__(self):
         super().__init__()
@@ -12,9 +18,35 @@ class DropCanvas(QFrame):
         self.setAcceptDrops(True)
         
         layout=QVBoxLayout(self)
-        self.label=QLabel("Drag and drop images here to add to vault")
-        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.label)
+        layout.setContentsMargins(0, 0, 0, 0)
+        #stack to flip between welcome screen and image grid
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack)
+        #welcome screen with instructions
+        self.welcome_screen = QLabel(
+            "Welcome to your Reference Vault!\n\n"
+            "1. Drag and drop a folder of images anywhere into this window.\n"
+            "2. Click the folder name on the left to view your references.\n"
+        )
+        self.welcome_screen.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.welcome_screen.setStyleSheet("color: #888888; font-size: 18px;")
+        
+        
+        #thumbnail grid
+        self.grid = QListWidget()
+        self.grid.setViewMode(QListWidget.ViewMode.IconMode)
+        self.grid.setIconSize(QtCore.QSize(150, 150))
+        self.grid.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.grid.setSpacing(10)
+        self.grid.setStyleSheet("QListWidget { border: none; background-color: transparent; }")
+        self.stack.addWidget(self.welcome_screen)
+        self.stack.addWidget(self.grid)
+        
+        
+      
+        
+        #allowed image formats
+        self.valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
     
     #handle drag enter event
     def dragEnterEvent(self, event): # type: ignore
@@ -33,9 +65,43 @@ class DropCanvas(QFrame):
     def dropEvent(self, event): # type: ignore
         self.setStyleSheet("background-color: #1e1e1e;color: gray;")
         for url in event.mimeData().urls():
-            file_path=url.toLocalFile()
-            print(f"File dropped: {file_path}")
-            self.label.setText(f"Added: {file_path.split('/')[-1]}")  # Display the name of the added file
+            path=url.toLocalFile()
+            #check if file or folder
+            if os.path.isdir(path):
+                #for folders, emit signal with folder name and path 
+                folder_name=os.path.basename(path)
+                self.folder_dropped.emit(folder_name,path)
+      
+      #for files, check if it's a valid image and add to grid       
+    def load_images_from_path(self,folder_path):
+        #wipe current grid
+        self.stack.setCurrentWidget(self.grid) #switch to grid view when loading images
+        self.grid.clear()
+        for root,dirs,files in os.walk(folder_path):
+            for file in files:
+                #get file extension and check if it's a valid image format and make lowercase for comparison
+                ext=os.path.splitext(file)[1].lower()
+                if ext in self.valid_extensions:
+                    full_path=os.path.join(root,file)
+                    self.add_thumbnail(full_path)
+        
+        
+  
+        
+    
+    def add_thumbnail(self, image_path):
+        #load into memory
+        pixmap=QPixmap(image_path)
+        
+        #downscale to thumbnail size
+        scaled_pixmap=pixmap.scaled(150,150,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation)
+        #create list item with thumbnail
+        item=QListWidgetItem()
+        item.setIcon(QIcon(scaled_pixmap))
+        #store high res image path
+        item.setData(Qt.ItemDataRole.UserRole, image_path) #store full path in item data for later use when clicked
+        item.setToolTip(os.path.basename(image_path)) #show image name on hover
+        self.grid.addItem(item)    
     
 class ReferenceVaul(QMainWindow):
     def __init__(self):
@@ -59,23 +125,42 @@ class ReferenceVaul(QMainWindow):
         self.sidebar.setFixedWidth(250)
         self.sidebar.setStyleSheet("background-color: #2c3e50;color: white;")
         sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.addWidget(QLabel("Folders & tags"))
+        #list for folders
+        self.folder_list=QListWidget()
+        self.folder_list.setStyleSheet("QListWidget{border: none;font-size:14px;QListWidget::item{padding:10px;QListWidget::item:selected{background-color:#34495e;}}}")
+        #connect folder click to load images in canvas
+        self.folder_list.itemClicked.connect(self.on_sidebar_folder_clicked)
         
-        #canvas for image grid
-        self.canvas=QFrame()
-        self.canvas.setStyleSheet("background-color: #1e1e1e;color: gray;")
+        sidebar_layout.addWidget(self.folder_list)
+
+        #add drop canvas for image grid
+        self.canvas = DropCanvas()
+        self.canvas.folder_dropped.connect(self.add_folder_to_sidebar)
         
-        canvas_layout = QVBoxLayout(self.canvas)
-        canvas_layout.addWidget(QLabel("Image Grid thumbnails here"))
-        
-        #add drag and drop canvas
-        self.canvas=DropCanvas()
-        
-        #add sidebar and canvas to main layout
         main_layout.addWidget(self.sidebar)
-        main_layout.addWidget(self.canvas)
+        main_layout.addWidget(self.canvas) 
+    
+    #add folder to sidebar when dropped and store full path in item data for later use
+    def add_folder_to_sidebar(self, folder_name, full_path):
+        item = QListWidgetItem(folder_name)
+        #store the full path in the item data for later use when clicked
+        item.setData(Qt.ItemDataRole.UserRole, full_path) 
+        self.folder_list.addItem(item) 
         
-        
+        #when a folder is added, automatically load it in the canvas and switch to canvas view
+        if self.folder_list.count()==1:
+          
+            #select and load first folder
+            self.folder_list.setCurrentItem(item)
+            self.canvas.load_images_from_path(full_path)
+           
+   
+       
+    #when a folder is clicked in the sidebar, load its images in the canvas
+    def on_sidebar_folder_clicked(self, item):
+        folder_path = item.data(Qt.ItemDataRole.UserRole) #get full path from item data
+        self.canvas.load_images_from_path(folder_path)
+       
 
 if __name__ == "__main__":
     #loop to run the application
