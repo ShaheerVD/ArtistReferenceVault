@@ -16,6 +16,10 @@ class ImageLoaderThread(QThread):
         
     def run(self):
         for root, dirs, files in os.walk(self.folder_path):
+            
+            #check for interruption request and stop the thread
+            if self.isInterruptionRequested():
+                return
             for file in files:
                 ext = os.path.splitext(file)[1].lower()
                 if ext in self.valid_extensions:
