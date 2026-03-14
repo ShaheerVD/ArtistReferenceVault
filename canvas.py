@@ -2,7 +2,7 @@ import os
 from PyQt6 import QtCore
 from PyQt6.QtWidgets import QFrame, QListWidgetItem,QVBoxLayout,QStackedWidget,QLabel,QListWidget
 from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal,QUrl,QMimeData
-from PyQt6.QtGui import QImage, QPixmap,QDrag,QIcon
+from PyQt6.QtGui import QImage, QMouseEvent, QPixmap,QDrag,QIcon
 
 #multi threading to stop UI freezing when loading large folders
 
@@ -47,6 +47,10 @@ class ReferenceGrid(QListWidget):
             self.setStyleSheet("QListWidget { border: none; background-color: transparent; }")
             self.setDragEnabled(True)
             self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        
+        def mouseMoveEvent(self, event): # type: ignore
+            if event.buttons()&Qt.MouseButton.LeftButton:
+                super().mouseMoveEvent(event)
             
         def startDrag(self, supportedActions):
             items=self.selectedItems()

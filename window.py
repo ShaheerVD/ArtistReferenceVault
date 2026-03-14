@@ -1,8 +1,9 @@
 #controller for the main canvas area where images are displayed. It also handles drag and drop of folders to add them to the vault.
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget
+from PyQt6.QtWidgets import QFrame,QMenu, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget
 from PyQt6.QtCore import Qt
 from canvas import DropCanvas
 from database import DatabaseManager
+from PyQt6.QtGui import QContextMenuEvent, QMouseEvent
 #this class is the main window of the application. It contains the sidebar and the canvas. It listens for signals from the canvas when a folder is dropped and adds it to the sidebar. It also handles clicks on the sidebar to load the corresponding images in the canvas.
 class ReferenceVault(QMainWindow):
     def __init__(self):
@@ -29,9 +30,23 @@ class ReferenceVault(QMainWindow):
         sidebar_layout = QVBoxLayout(self.sidebar)
         #list for folders
         self.folder_list=QListWidget()
-        self.folder_list.setStyleSheet("QListWidget{border: none;font-size:14px;QListWidget::item{padding:10px;QListWidget::item:selected{background-color:#34495e;}}}")
+        self.folder_list.setStyleSheet("""
+            QListWidget {
+                border: none;
+                font-size: 14px;
+            }
+            QListWidget::item {
+                padding: 10px;
+            }
+            QListWidget::item:selected {
+                background-color: #34495e;
+            }
+            """)
         #connect folder click to load images in canvas
         self.folder_list.itemClicked.connect(self.on_sidebar_folder_clicked)
+        
+      
+        
         
         sidebar_layout.addWidget(self.folder_list)
 
@@ -44,6 +59,38 @@ class ReferenceVault(QMainWindow):
     
         #load folders from database and add to sidebar on startup
         self.load_saved_folders()
+     
+    def contextMenuEvent(self,event:QContextMenuEvent): # type: ignore
+        pos = self.folder_list.viewport().mapFromGlobal(event.globalPos()) #type: ignore
+        item = self.folder_list.itemAt(pos)
+        if item is None:return
+        
+        self.folder_list.setCurrentItem(item) #select the item that was right-clicked
+        menu = QMenu(self)
+        menu.setStyleSheet("background-color: #34495e; color: white; padding:5px;")
+        delete_action = menu.addAction("Delete Folder")
+        action = menu.exec(event.globalPos())
+        
+        if action == delete_action:
+         self.remove_folder(item)
+        
+    
+    
+    
+     
+    def remove_folder(self, item):
+        path= item.data(Qt.ItemDataRole.UserRole) #get full path from item data
+        self.db.delete_folder(path) #remove from database
+        row = self.folder_list.row(item)
+        self.folder_list.takeItem(row) #remove from sidebar
+        
+        if self.current_folder_path == path:
+            self.canvas.grid.clear() #clear canvas if the currently loaded folder was deleted
+            self.current_folder_path = None #reset tracker
+            self.canvas.stack.setCurrentWidget(self.canvas.welcome_screen) 
+    
+    
+    
         
     def load_saved_folders(self):
         saved_folders = self.db.get_folders()

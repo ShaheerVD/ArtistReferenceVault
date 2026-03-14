@@ -33,3 +33,9 @@ class DatabaseManager:
         cursor.execute("SELECT name, path FROM folders")
         #return tuples of (name, path) for all folders in the database
         return cursor.fetchall()
+    
+    def delete_folder(self,path):
+        cursor = self.conn.cursor()
+        #Delete the folder from the database based on the unique path
+        cursor.execute("DELETE FROM folders WHERE path = ?", (path,))
+        self.conn.commit()
