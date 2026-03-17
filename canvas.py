@@ -3,7 +3,7 @@ import shutil #copy local files
 import urllib.request #download web files
 import uuid #generate unique filename for web images
 from PyQt6 import QtCore
-from PyQt6.QtWidgets import QFrame, QMenu,QListWidgetItem,QVBoxLayout,QStackedWidget,QMessageBox,QLabel,QListWidget
+from PyQt6.QtWidgets import QFrame, QMenu,QListWidgetItem,QVBoxLayout,QStackedWidget,QMessageBox,QLabel,QListWidget,QProgressBar
 from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal,QUrl,QMimeData
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap,QDrag,QIcon,QContextMenuEvent
 
@@ -184,6 +184,24 @@ class DropCanvas(QFrame):
         #stack to flip between welcome screen and image grid
         self.stack = QStackedWidget()
         layout.addWidget(self.stack)
+        
+        #progress bar
+        self.progress_bar=QProgressBar()
+        self.progress_bar.setRange(0,0) #loop animation
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(4)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar{
+                border:none;
+                background-color:#1e1e1e;
+            }
+            QProgressBar::chunk{
+                background-color:#3498db;
+            }
+        """)
+        self.progress_bar.hide()
+        layout.addWidget(self.progress_bar)
+        
         #welcome screen with instructions
         self.welcome_screen = QLabel(
             "Welcome to your Reference Vault!\n\n"
@@ -284,7 +302,11 @@ class DropCanvas(QFrame):
     def download_web_image(self,url):
         downloader = WebImageDownloader(url,self.active_folder)
         downloader.download_complete.connect(self.add_single_thumbnail)
-        downloader.start()
+        
+        #hook into downloader
+        self.progress_bar.show()
+        downloader.finished.connect(self.progress_bar.hide)
+        downloader.start()       
         
         #keep reference
         self.active_downloaders.append(downloader)
@@ -310,7 +332,7 @@ class DropCanvas(QFrame):
         self.stack.setCurrentWidget(self.grid) #switch to grid view when loading images
         self.grid.clear()
         #if a loader thread is already running, terminate it before starting a new one to prevent multiple threads running at the same time if user quickly loads different folders
-        if self.loader_thread and self.loader_thread.isRunning():
+        if self.loader_thread is not None and self.loader_thread.isRunning():
             #ask thread to stop
             self.loader_thread.requestInterruption()
             #sever the radio connection so old images don't pop up in the new folder
@@ -327,9 +349,12 @@ class DropCanvas(QFrame):
         #Start the background worker for the NEW folder
         self.loader_thread = ImageLoaderThread(folder_path, self.valid_extensions)
         self.loader_thread.image_loaded.connect(self.add_thumbnail_from_thread)
+       
+        
+        #Hook progress bar into thread lifecycle
+        self.progress_bar.show()
+        self.loader_thread.finished.connect(self.progress_bar.hide)
         self.loader_thread.start()
-        
-        
   
         
     
@@ -344,6 +369,25 @@ class DropCanvas(QFrame):
         self.grid.addItem(item)    
      
     def stop_threads(self):
-        if self.loader_thread and self.loader_thread.isRunning():
+        print("Initiating global thread shutdown...")
+        
+        #Stop active folder loader
+        if self.loader_thread is not None  and self.loader_thread.isRunning():
             self.loader_thread.requestInterruption()
-            self.loader_thread.wait() 
+            self.loader_thread.wait()
+
+        #Kill dying threads
+        if hasattr(self, 'dying_threads'):
+            for thread in self.dying_threads:
+                if thread.isRunning():
+                    thread.requestInterruption()
+                    thread.wait()
+                    
+        #Wait for web downloads to finish 
+        if hasattr(self, 'active_downloaders'):
+            for downloader in self.active_downloaders:
+                if downloader.isRunning():
+                    
+                    downloader.wait() 
+                    
+        print("All threads successfully terminated.")
