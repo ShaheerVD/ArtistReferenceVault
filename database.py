@@ -39,7 +39,7 @@ class DatabaseManager:
     
     def get_tags_for_image(self,image_path):
         cursor = self.conn.cursor()
-        cursor.execute("SELECT tag FROM tags WHERE image_path = ?",(image_path))
+        cursor.execute("SELECT tag FROM tags WHERE image_path = ?",(image_path,))
         #return list of tuple [('hand',),('face',)]
         return [row[0] for row in cursor.fetchall()]
     

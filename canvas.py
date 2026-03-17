@@ -170,9 +170,10 @@ class ReferenceGrid(QListWidget):
 #this class handles the drag and drop of folders onto the canvas and displays the image grid. It emits a signal when a folder is dropped so the main window can add it to the sidebar. It also has a method to load images from a given folder path and display them as thumbnails in the grid.
 
 class DropCanvas(QFrame):
-    
+    #announce a folder dropped, new image path
     folder_dropped=pyqtSignal(str,str)
-    
+    image_added = pyqtSignal(str)
+    needs_new_folder = pyqtSignal()
     #canvas for image grid
     def __init__(self):
         super().__init__()
@@ -258,6 +259,9 @@ class DropCanvas(QFrame):
             if url.scheme() in ['http', 'https']:
                 web_link = url.toString()
                 
+                if not self.active_folder:
+                    self.needs_new_folder.emit()
+                
                 print("Web link dropped:", {web_link})     
                 #check if looking at a folder
                 if self.active_folder:
@@ -276,6 +280,9 @@ class DropCanvas(QFrame):
                 
                 elif os.path.isfile(path):
                     print(f"file dropped: {path}")
+                    if not self.active_folder:
+                        self.needs_new_folder.emit()
+                    
                     if self.active_folder:
                         self.copy_local_image(path)
                     else:
@@ -297,6 +304,9 @@ class DropCanvas(QFrame):
             if not os.path.exists(dest_path):
                 shutil.copy2(source_path,dest_path)
                 print(f"Copied image to: {dest_path}")
+                #emit that a new image arrived
+                self.image_added.emit(dest_path)
+                self.add_single_thumbnail(dest_path)    
     
     #download web image using thread                
     def download_web_image(self,url):
@@ -306,6 +316,13 @@ class DropCanvas(QFrame):
         #hook into downloader
         self.progress_bar.show()
         downloader.finished.connect(self.progress_bar.hide)
+        #emit
+        downloader.download_complete.connect(self.image_added.emit)
+        
+        #image loading progress bar
+        self.progress_bar.show()
+        downloader.finished.connect(self.progress_bar.hide)
+        
         downloader.start()       
         
         #keep reference

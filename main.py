@@ -1,3 +1,4 @@
+import onnxruntime
 import sys
 from PyQt6.QtWidgets import QApplication
 from window import ReferenceVault

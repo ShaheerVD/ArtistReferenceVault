@@ -1,13 +1,47 @@
 
 import os
 from pathlib import Path
+from autotagger import AITaggerWorker
 
 #controller for the main canvas area where images are displayed. It also handles drag and drop of folders to add them to the vault.
 from PyQt6.QtWidgets import QInputDialog,QFrame,QMenu, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt,QThread,pyqtSignal
 from canvas import DropCanvas
 from database import DatabaseManager
 from PyQt6.QtGui import QContextMenuEvent, QMouseEvent
+
+
+
+#This class will work in the background and find untagged images when the app is opened
+class BackgroundCrawlerThread(QThread):
+    #emit the path of an image that needs to be tagged
+    untagged_image_found = pyqtSignal(str)
+    
+    def __init__(self,folders_to_scan,db_manager):
+        super().__init__()
+        self.folders_to_scan = folders_to_scan
+        self.db = db_manager
+        self.valid_extensions = ['.jpg','.jpeg','.png','.bmp','.webp']
+    
+    def run(self):
+        print(f"Crawler started scanning {len(self.folders_to_scan)} folder(s) for untagged images..")
+       
+        for folder_path in self.folders_to_scan:
+            for root,dirs,files in os.walk(folder_path):
+                for file in files:
+                    ext=os.path.splitext(file)[1].lower()
+                    if ext in self.valid_extensions:
+                        full_path = os.path.join(root,file)
+                        
+                        #check if DB already knows about the image
+                        existing_tags = self.db.get_tags_for_image(full_path)
+                        
+                        #if db return empty list then it  needs to be tagged
+                        if not existing_tags:
+                            self.untagged_image_found.emit(full_path)     
+        
+        print("Crawler finished scanning")
+
 
 #this class is the main window of the application. It contains the sidebar and the canvas. It listens for signals from the canvas when a folder is dropped and adds it to the sidebar. It also handles clicks on the sidebar to load the corresponding images in the canvas.
 class ReferenceVault(QMainWindow):
@@ -17,6 +51,12 @@ class ReferenceVault(QMainWindow):
         self.master_vault_path = self.setup_master_vault()
         
         self.db = DatabaseManager() #initialize the database manager
+        #Load the Ai model
+        self.ai_engine = AITaggerWorker()
+        self.ai_engine.tags_generated.connect(self.save_generated_tags)
+        self.ai_engine.start()
+        
+        
         self.current_folder_path = None #track the currently loaded folder path to avoid reloading if the same folder is clicked again
         #main window
         self.setWindowTitle("Reference Vault")
@@ -62,13 +102,25 @@ class ReferenceVault(QMainWindow):
         self.canvas = DropCanvas()
         self.canvas.folder_dropped.connect(self.add_folder_to_sidebar)
         
+        #When Canvas announces a new Image, put it into the Ai's queue
+        self.canvas.image_added.connect(self.ai_engine.queue_image)
+        
+        #catch distress signal and trigger a popup
+        self.canvas.needs_new_folder.connect(self.create_custom_folder)
+        
+        
         main_layout.addWidget(self.sidebar)
         main_layout.addWidget(self.canvas) 
     
         #load folders from database and add to sidebar on startup
         self.load_saved_folders()
     
-    
+        #extract paths from the saved folders tuples
+        saved_folders = self.db.get_folders()
+        folder_paths = [path for name,path in saved_folders] 
+        
+        if folder_paths:
+            self.start_crawler(folder_paths)
     
     
     #create master reference library folder in documents
@@ -91,6 +143,17 @@ class ReferenceVault(QMainWindow):
             self.add_folder_to_sidebar(folder_name,new_path)
             print(f"Created custom vault folder: {new_path}")
         
+            #Make ui select the new folder
+            #loop through sidebar to find new item just created
+            for i in range(self.folder_list.count()):
+                item = self.folder_list.item(i)
+                if item is not None and item.data(Qt.ItemDataRole.UserRole) == new_path:
+                    #select visually
+                    self.folder_list.setCurrentItem(item)
+                    self.current_folder_path=new_path
+                    #tell canvas to activate this path
+                    self.canvas.load_images_from_path(new_path)
+                    break
      
     def contextMenuEvent(self,event:QContextMenuEvent): # type: ignore
         pos = self.folder_list.viewport().mapFromGlobal(event.globalPos()) #type: ignore
@@ -166,7 +229,8 @@ class ReferenceVault(QMainWindow):
             self.current_folder_path = full_path
             self.canvas.load_images_from_path(full_path)
            
-   
+        #tell crawler to scan the newly dropped folder
+        self.start_crawler([full_path])
        
     #when a folder is clicked in the sidebar, load its images in the canvas
     def on_sidebar_folder_clicked(self, item):
@@ -175,8 +239,25 @@ class ReferenceVault(QMainWindow):
             self.current_folder_path = folder_path
         self.canvas.load_images_from_path(folder_path)
     
+    #shutdown function stops the AI and threads
     def closeEvent(self,event): #type:ignore
         print("shutting down...")
         #stop background activity
         self.canvas.stop_threads()
+        #kill the AI hahaha
+        self.ai_engine.stop_engine()
         event.accept()   
+        
+    #save generated image tags    
+    def save_generated_tags(self,image_path,tags_list):
+        for tag in tags_list:
+            self.db.add_tag(image_path,tag)    
+     
+    
+    #function starts the crawler
+    def start_crawler(self,folder_paths_list):        
+        self.crawler  = BackgroundCrawlerThread(folder_paths_list,self.db)
+        
+        #Route crawler discoveries directly to the AI inbox
+        self.crawler.untagged_image_found.connect(self.ai_engine.queue_image)
+        self.crawler.start()
