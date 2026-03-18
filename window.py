@@ -90,7 +90,7 @@ class ReferenceVault(QMainWindow):
         super().__init__()
         self.setWindowTitle("Reference Vault")
         self.resize(1000,750)
-        icon_path=os.path.join(os.getcwd(),"logo.ico")
+        icon_path=os.path.join(os.getcwd(),"app_icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         
