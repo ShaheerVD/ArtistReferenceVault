@@ -27,10 +27,15 @@ class ImageLoaderThread(QThread):
         files_to_process = []
         
         if isinstance(self.target, str): 
-            #if folder then walk through it
-            for root, dirs, files in os.walk(self.target):
-                for file in files:
-                    files_to_process.append(os.path.join(root, file))
+            #if folder then only scan the top level, ignore subfolders
+            try:
+                for item_name in os.listdir(self.target):
+                    full_path = os.path.join(self.target, item_name)
+                    #check if it is a file (not a folder) before adding it to the grid
+                    if os.path.isfile(full_path):
+                        files_to_process.append(full_path)
+            except Exception as e:
+                print(f"Error reading folder contents: {e}")
                     
         elif isinstance(self.target, list):
            
@@ -263,6 +268,14 @@ class DropCanvas(QFrame):
         self.no_results_screen.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.no_results_screen.setStyleSheet("color: #666666; font-size: 18px;")
         
+        #Empty folder
+        self.empty_folder_screen = QLabel(
+            "This folder has no images inside it.\n\n"
+            "If it has subfolders, click them in the sidebar"
+        )
+        self.empty_folder_screen.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_folder_screen.setStyleSheet("color: #666666; font-size: 18px;")
+        
         #thumbnail grid
         self.grid = ReferenceGrid()
         self.grid.setViewMode(QListWidget.ViewMode.IconMode)
@@ -273,6 +286,7 @@ class DropCanvas(QFrame):
         self.stack.addWidget(self.welcome_screen)
         self.stack.addWidget(self.grid)
         self.stack.addWidget(self.no_results_screen)
+        self.stack.addWidget(self.empty_folder_screen)
         
         #allowed image formats
         self.valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
@@ -295,7 +309,15 @@ class DropCanvas(QFrame):
     
     #If the user drags the item out of the canvas, reset the style
     def dragLeaveEvent(self, event): # type: ignore
-        self.setStyleSheet("background-color: #1e1e1e;color: gray;")            
+        self.setStyleSheet("background-color: #1e1e1e;color: gray;")    
+                
+    #Switches to the empty message if the thread found 0 images
+    def check_if_folder_is_empty(self):
+        
+        if self.grid.count() == 0:
+            self.stack.setCurrentWidget(self.empty_folder_screen)
+        else:
+            self.stack.setCurrentWidget(self.grid)
         
     #triggered when the user drops files onto the canvas determines if web based or local
     def dropEvent(self, event): # type: ignore
@@ -326,8 +348,16 @@ class DropCanvas(QFrame):
                 path = url.toLocalFile()
                 
                 if os.path.isdir(path):
-                    folder_name = os.path.basename(path)
-                    self.folder_dropped.emit(folder_name, path) #emit signal to add folder to sidebar
+                    #Recursive folder search
+                    #find all subfolders
+                    for root_dir,sub_dirs,files in os.walk(path):
+                    
+                        #prevent the app from adding hidden system folders (like .git or .thumb_cache)
+                        sub_dirs[:] = [d for d in sub_dirs if not d.startswith('.')]
+                        
+                        #get the name of the current folder in the tree
+                        folder_name = os.path.basename(root_dir)
+                        self.folder_dropped.emit(folder_name, root_dir) #emit signal to add folder to sidebar
                 
                 elif os.path.isfile(path):
                     print(f"file dropped: {path}")
@@ -393,9 +423,7 @@ class DropCanvas(QFrame):
     def load_images_from_path(self,folder_path):
         #update tracker when new folder is clicked
         self.active_folder=folder_path
-        
-        
-        
+                       
         #wipe current grid
         self.stack.setCurrentWidget(self.grid) #switch to grid view when loading images
         self.grid.clear()
@@ -422,6 +450,7 @@ class DropCanvas(QFrame):
         #Hook progress bar into thread lifecycle
         self.progress_bar.show()
         self.loader_thread.finished.connect(self.progress_bar.hide)
+        self.loader_thread.finished.connect(self.check_if_folder_is_empty)
         self.loader_thread.start()
   
     def load_images_from_list(self,file_paths_list):

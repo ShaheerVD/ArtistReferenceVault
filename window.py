@@ -1,15 +1,17 @@
 
 import os
 import shutil
+import json
+import urllib.request
 from pathlib import Path
 from autotagger import AITaggerWorker
 
 #controller for the main canvas area where images are displayed. It also handles drag and drop of folders to add them to the vault.
 from PyQt6.QtWidgets import  QDialog,QMessageBox,QCompleter,QInputDialog,QFrame,QMenu,QLineEdit, QHBoxLayout, QListWidgetItem, QMainWindow,QVBoxLayout,QStackedWidget,QLabel,QListWidget, QWidget,QPushButton,QMessageBox,QListView
-from PyQt6.QtCore import Qt,QThread,pyqtSignal,QTimer,QStringListModel
+from PyQt6.QtCore import Qt,QThread,pyqtSignal,QTimer,QStringListModel,QUrl
 from canvas import DropCanvas
 from database import DatabaseManager
-from PyQt6.QtGui import QContextMenuEvent, QMouseEvent,QPixmap,QIcon
+from PyQt6.QtGui import QContextMenuEvent, QMouseEvent,QPixmap,QIcon,QDesktopServices
 
 
 
@@ -82,6 +84,37 @@ class LightBox(QDialog):
     #If user clicks anywhere on the image, it will be closed
     def mousePressEvent(self,event): #type:ignore
         self.accept()
+#---------------
+#UPdate checker
+class UpdateCheckerThread(QThread):
+    # Emits the new version string and the download URL if an update is found
+    update_available = pyqtSignal(str, str) 
+
+    def __init__(self, current_version):
+        super().__init__()
+        self.current_version = current_version
+       
+        self.api_url = "https://api.github.com/repos/ShaheerVD/ArtistReferenceVault/releases/latest"
+
+    def run(self):
+        try:
+         
+            req = urllib.request.Request(self.api_url, headers={'User-Agent': 'ReferenceVault-App'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                
+                latest_version = data.get('tag_name', '')
+                release_url = data.get('html_url', '')
+
+                #If GitHub's version doesn't match the app's version, trigger the popup
+                if latest_version and latest_version != self.current_version:
+                    self.update_available.emit(latest_version, release_url)
+                    
+        except Exception as e:
+            #If user have no internet  fail silently so the app still works normally
+            print(f"Update check skipped/failed: {e}")
+
+
 
 #----------------------------------------------------#
 #this class is the main window of the application. It contains the sidebar and the canvas. It listens for signals from the canvas when a folder is dropped and adds it to the sidebar. It also handles clicks on the sidebar to load the corresponding images in the canvas.
@@ -90,7 +123,7 @@ class ReferenceVault(QMainWindow):
         super().__init__()
         self.setWindowTitle("Reference Vault")
         self.resize(1000,750)
-        icon_path=os.path.join(os.getcwd(),"logo.ico")
+        icon_path=os.path.join(os.getcwd(),"app_icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         
@@ -99,17 +132,25 @@ class ReferenceVault(QMainWindow):
         self.master_vault_path = self.setup_master_vault()
         
         self.db = DatabaseManager() 
+        
+        #update checker
+        self.CURRENT_VERSION = "v1.0.2" 
+        
+        self.update_checker = UpdateCheckerThread(self.CURRENT_VERSION)
+        self.update_checker.update_available.connect(self.show_update_dialog)
+        self.update_checker.start()
         #Load the Ai model
         self.ai_engine = AITaggerWorker()
         self.ai_engine.tags_generated.connect(self.save_generated_tags)
+        self.ai_engine.tags_generated.connect(self.update_image_tooltip)
         self.ai_engine.engine_ready.connect(self.on_ai_ready)
         
-        QTimer.singleShot(500,self.ai_engine.start)
+        QTimer.singleShot(500, lambda: self.ai_engine.start(QThread.Priority.NormalPriority))
         
         
         self.current_folder_path = None #track the currently loaded folder path to avoid reloading if the same folder is clicked again
         #main window
-       
+        self.ai_engine.queue_updated.connect(self.update_ai_status)
         #Base Layout
         #central contaainer and horizontal layout
         central_widget = QWidget()
@@ -146,7 +187,10 @@ class ReferenceVault(QMainWindow):
         
         
         sidebar_layout.addWidget(self.folder_list)
-
+        self.ai_status_label = QLabel("🤖 AI: Sleeping")
+        self.ai_status_label.setStyleSheet("color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")
+        self.ai_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sidebar_layout.addWidget(self.ai_status_label)
         
         
         
@@ -165,7 +209,7 @@ class ReferenceVault(QMainWindow):
         
         
         #load folders from database and add to sidebar on startup
-        self.load_saved_folders()
+        self.refresh_sidebar()
 
        #Search bar
         self.search_bar = QLineEdit()
@@ -341,44 +385,66 @@ class ReferenceVault(QMainWindow):
                 shutil.rmtree(path)
             except Exception as e:
                 print(f"Failed to permanently delete folder: {e}")
+        self.refresh_sidebar()
     
     
-    
+     #sidebar with visual heirarchy   
+    def refresh_sidebar(self):
         
-    def load_saved_folders(self):
+        self.folder_list.clear()
+        
         saved_folders = self.db.get_folders()
+        #Sort by path so subfolders always appear directly under their parents!
+        saved_folders.sort(key=lambda x: os.path.normpath(x[1]))
+        
         for name, path in saved_folders:
-            item = QListWidgetItem(name)
-            item.setData(Qt.ItemDataRole.UserRole, path) #store full path in item data
-            self.folder_list.addItem(item) 
-        #if there are saved folders, automatically load the first one in the canvas and update the tracker
-        if saved_folders:
+            clean_path = os.path.normpath(path)
+            depth = 0
+            
+            #Calculate how deep this folder is by counting its parents in the DB
+            for _, other_path in saved_folders:
+                clean_other = os.path.normpath(other_path)
+                #If this path is inside another path, increase its depth
+                if clean_path != clean_other and clean_path.startswith(clean_other + os.sep):
+                    depth += 1
+            
+            #Apply the visual UI prefix
+            if depth == 0:
+                display_name = name
+            else:
+                #add spaces based on depth
+                prefix = ("    " * (depth - 1)) + " └─ "
+                display_name = prefix + name
+                
+            item = QListWidgetItem(display_name)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.folder_list.addItem(item)
+            
+            #keep the currently active folder visually selected
+            if path == self.current_folder_path:
+                self.folder_list.setCurrentItem(item)
+
+        #on app startup, automatically select and load the very first folder
+        if not self.folder_list.currentItem() and self.folder_list.count() > 0:
             first_item = self.folder_list.item(0)
             self.folder_list.setCurrentItem(first_item)
-            self.current_folder_path = first_item.data(Qt.ItemDataRole.UserRole) # type: ignore
+            self.current_folder_path = first_item.data(Qt.ItemDataRole.UserRole) #type:ignore
             self.canvas.load_images_from_path(self.current_folder_path)
     
     #add folder to sidebar when dropped and store full path in item data for later use
     def add_folder_to_sidebar(self, folder_name, full_path):
         self.db.add_folder(folder_name, full_path) #save to database
         
-        item = QListWidgetItem(folder_name)
-        #store the full path in the item data for later use when clicked
-        item.setData(Qt.ItemDataRole.UserRole, full_path) 
-        self.folder_list.addItem(item) 
+        #Update tracker and force the UI to rebuild the tree
+        self.current_folder_path = full_path
+        self.refresh_sidebar()
         
-        #when a folder is added, automatically load it in the canvas and switch to canvas view
-        if self.folder_list.count()==1:
-          
-            #select and load first folder and update the tracker
-            self.folder_list.setCurrentItem(item)
-            self.current_folder_path = full_path
-            self.search_bar.setEnabled(True)
-            self.search_bar.clear()
-            
-            self.canvas.load_images_from_path(full_path)
-           
-        #tell crawler to scan the newly dropped folder
+        #Load the images into the canvas
+        self.search_bar.setEnabled(True)
+        self.search_bar.clear()
+        self.canvas.load_images_from_path(full_path)
+        
+        #Tell crawler to scan the newly dropped folder
         self.start_crawler([full_path])
        
     #when a folder is clicked in the sidebar, load its images in the canvas
@@ -409,6 +475,24 @@ class ReferenceVault(QMainWindow):
         for tag in tags_list:
             self.db.add_tag(image_path,tag)    
         self.update_search_autocomplete() #learn new words in real time as ai tags
+        
+        
+    
+    def update_image_tooltip(self, image_path, tags_list):
+        #Finds the tagged image in the UI grid and updates its hover text
+        
+        #Format the tags
+        chunked_tags = [", ".join(tags_list[i:i+5]) for i in range(0, len(tags_list), 5)]
+        tag_string = ",\n".join(chunked_tags)
+        new_tooltip = f"{os.path.basename(image_path)}\nTags:\n{tag_string}"
+        
+        #Loop through the visual grid to find the matching thumbnail
+        for i in range(self.canvas.grid.count()):
+            item = self.canvas.grid.item(i)
+            #Check if this thumbnail's saved path matches the one the AI just finished
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == image_path:
+                item.setToolTip(new_tooltip)
+                break #Stop searching once updated it    
     
     #function starts the crawler
     def start_crawler(self,folder_paths_list):        
@@ -486,3 +570,30 @@ class ReferenceVault(QMainWindow):
             "• Full-Screen View: Double-click any thumbnail to open the high-resolution lightbox.\n"
             "• Managing Files: Right-click folders in the sidebar or images in the grid to safely remove them or permanently delete them."
         )        
+        
+    def update_ai_status(self, count):
+        #Updates the sidebar to show how many images the AI has left to tag.
+        if count > 0:
+            self.ai_status_label.setText(f"⚙️ Auto Tagging: {count} left")
+            # Turn it yellow to show it's busy working
+            self.ai_status_label.setStyleSheet("color: #f1c40f; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")
+        else:
+            self.ai_status_label.setText("🤖 Auto Tagger: Ready")
+            # Turn it green to show it's done
+            self.ai_status_label.setStyleSheet("color: #2ecc71; padding: 10px; font-weight: bold; background-color: #273746; border-radius: 5px;")    
+    
+     #Displays a popup when a new GitHub release is found.
+    def show_update_dialog(self, latest_version, release_url):
+       
+        reply = QMessageBox.information(
+            self,
+            "Update Available!",
+            f"A new version of Reference Vault ({latest_version}) is available!\n\n"
+            f"You are currently running {self.CURRENT_VERSION}.\n\n"
+            f"Would you like to download the update now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            #Opens the users default web browser (Chrome/Edge/etc) to the download page
+            QDesktopServices.openUrl(QUrl(release_url))         
