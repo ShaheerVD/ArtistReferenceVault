@@ -1,0 +1,12 @@
+# Core GUI Framework
+PyQt6>=6.4.0
+
+# AI Inference Engine (Universal Windows GPU / DirectML)
+onnxruntime-directml==1.15.1
+
+# Data Science & Image Processing
+numpy<2.0.0
+Pillow>=10.0.0
+
+# AI Model Downloader
+huggingface-hub>=0.19.0

@@ -27,67 +27,79 @@ class AITaggerWorker(QThread):
         self.is_running = True
     
     def run(self):
+    #OUTER TRY: Catches fatal download or boot errors
         try:  
             print("Ai Engine loading... loading ONNX Runtime") 
-                
             print("Downloading WD14 Auto-Tagger model (only happens once, ~300MB)...")
             
-            #use smilingWolfs MOAT Architecture
+            #Use SmilingWolf's MOAT Architecture
             repo_id = "SmilingWolf/wd-v1-4-moat-tagger-v2"
             
-            #download tagger and the tag dictionary
-            model_path = hf_hub_download(repo_id,"model.onnx")
-            tags_path = hf_hub_download(repo_id,"selected_tags.csv")
+            #Download tagger and the tag dictionary
+            model_path = hf_hub_download(repo_id, "model.onnx")
+            tags_path = hf_hub_download(repo_id, "selected_tags.csv")
             
             print("Loading art tags into memory")
-            self.tags_vocab =[]
-            with open(tags_path,'r', encoding='utf-8') as f:
-                reader=csv.reader(f)
-                next(reader) #skip header row
+            self.tags_vocab = []
+            with open(tags_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                next(reader) # Skip header row
                 for row in reader:
-                    self.tags_vocab.append(row[1]) #tag name in second column
+                    self.tags_vocab.append(row[1]) # Tag name in second column
             
             print("Warming up ONNX inference engine")
-       
-           #Force OpenMP to only use 3 threads at the OS level
-            os.environ["OMP_NUM_THREADS"] = "3"
-            
             sess_options = ort.SessionOptions()
             
-            #limit ONNX internal operations to 3 cores
-            sess_options.intra_op_num_threads = 3
-            sess_options.inter_op_num_threads = 3
-            sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            
-            print("Booting standard CPU engine...")
-            
-            self.session = ort.InferenceSession(
+            #INNER TRY: Hardware Detection
+            try:
+                # Attempt to use GPU
+                print("Attempting to connect to GPU via DirectX...")
+                self.session = ort.InferenceSession(
                     model_path, 
                     sess_options=sess_options, 
-                    providers=['CPUExecutionProvider'] # CPU ONLY
+                    providers=['DmlExecutionProvider'] # Try GPU exclusively first
                 )
-            
-            print("WD14 Art Tagger running on CPU successfully.")
-            
+                
+                active_providers = self.session.get_providers()
+                if 'DmlExecutionProvider' not in active_providers:
+                    raise RuntimeError("DirectML rejected. No compatible DirectX 12 GPU found")
+                
+                print("SUCCESS: WD14 Art Tagger running on GPU (CUDA)")
+                
+            except Exception as e:
+                #FALLBACK TO CPU
+                print(f"GPU missing or unavailable. Falling back to CPU. Reason: {e}")
+                
+                #Apply the strict OS thread limits so the CPU doesn't freeze the app
+                os.environ["OMP_NUM_THREADS"] = "3"
+                sess_options.intra_op_num_threads = 3
+                sess_options.inter_op_num_threads = 3
+                sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                
+                print("Booting standard CPU engine...")
+                self.session = ort.InferenceSession(
+                    model_path, 
+                    sess_options=sess_options, 
+                    providers=['CPUExecutionProvider'] #Force CPU
+                )
+                print("SUCCESS: WD14 Art Tagger running on CPU.")
+
+            #tell UI engine is ready
             self.engine_ready.emit()
             
-            self.engine_ready.emit()
         except Exception as e:
-            #crash dump
-            #find the .exe directory ---
+            #crash dump for fatal outer errors
+            error_msg = traceback.format_exc()
             if getattr(sys, 'frozen', False):
-                #Running as a compiled PyInstaller executable
                 app_dir = os.path.dirname(sys.executable)
             else:
-                #Running as a normal raw Python script
                 app_dir = os.path.dirname(os.path.abspath(__file__))
                 
             log_path = os.path.join(app_dir, "Vault_Crash_Log.txt")
             
             with open(log_path, "a") as f:
-                f.write(f"ENGINE FAILED TO START:\n{traceback.format_exc()}\n\n")
-            return # Kill the thread
-        
+                f.write(f"ENGINE FAILED TO START:\n{error_msg}\n\n")
+            return #kill the thread
         
         #Consumer Loop
         while self.is_running:
