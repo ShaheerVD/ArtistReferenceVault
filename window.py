@@ -134,7 +134,7 @@ class ReferenceVault(QMainWindow):
         self.db = DatabaseManager() 
         
         #update checker
-        self.CURRENT_VERSION = "v1.0.2" 
+        self.CURRENT_VERSION = "v1.0.3" 
         
         self.update_checker = UpdateCheckerThread(self.CURRENT_VERSION)
         self.update_checker.update_available.connect(self.show_update_dialog)
@@ -353,17 +353,19 @@ class ReferenceVault(QMainWindow):
         menu.addSeparator() 
         
         rename_action = None
+        retag_action=None
         remove_ref_action = None
         delete_perm_action = None
         
         if item is not None:
             self.folder_list.setCurrentItem(item)
             rename_action = menu.addAction("Rename Folder")
+            retag_action =menu.addAction("Re-Tag Images")
             menu.addSeparator()
             remove_ref_action = menu.addAction("Remove Folder from Vault (Keep Files)")
             delete_perm_action = menu.addAction("Delete Folder Permanently from PC")
             
-        action = menu.exec(self.folder_list.viewport().mapToGlobal(pos))
+        action = menu.exec(self.folder_list.viewport().mapToGlobal(pos)) #type:ignore
         
         if action is None:
             return
@@ -391,7 +393,10 @@ class ReferenceVault(QMainWindow):
                         self.canvas.load_images_from_path(new_path)
                     except Exception as e:
                         QMessageBox.critical(self, "Error", f"Could not rename folder.\n\n{e}")
-                        
+             
+            elif action == retag_action:
+                folder_path = item.data(0, Qt.ItemDataRole.UserRole)
+                self.retag_folder(folder_path)            
             elif action == remove_ref_action:
                 self.remove_folder(item, permanent=False)    
             elif action == delete_perm_action:
@@ -781,3 +786,43 @@ class ReferenceVault(QMainWindow):
             #update the hover Tooltip visually
             self.update_image_tooltip(image_path, new_tags)
             self.update_search_autocomplete()
+            
+    #This function warns the user then deletes all existing tags for that folder from the database
+    #loops through the folder and puts the images back into the Ai's queue        
+    def retag_folder(self, folder_path):
+        reply = QMessageBox.question(
+            self,
+            "Re-Tag Folder",
+            "This will clear all current tags (including manual ones) for images in this folder and send them back to the AI.\n\nDo you want to proceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
+            images_queued = 0
+            
+            #find all images in this folder (and its subfolders)
+            for root, dirs, files in os.walk(folder_path):
+                for file in files:
+                    if os.path.splitext(file)[1].lower() in valid_extensions:
+                        full_path = os.path.join(root, file)
+                        
+                        #wipe the old tags from the Database
+                        try:
+                            self.db.delete_image(full_path)
+                        except AttributeError:
+                            pass
+                            
+                        #queue it back into the AI engine
+                        self.ai_engine.queue_image(full_path)
+                        images_queued += 1
+                        
+            if images_queued > 0:
+                print(f"Sent {images_queued} images to the AI Tagger.")
+                
+                #refresh the visual canvas to clear the tooltips immediately
+                if self.current_folder_path and self.current_folder_path.startswith(folder_path):
+                    self.canvas.load_images_from_path(self.current_folder_path)
+            else:
+                QMessageBox.information(self, "Empty", "No valid images found in this folder.")
