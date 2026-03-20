@@ -130,32 +130,39 @@ class DatabaseManager:
     def rename_folder(self, old_path, new_path, new_name):
         cursor = self.conn.cursor()
         try:
-            #Update the parent folder's exact name and path
+            import os
+            #Update the parent folder
             cursor.execute("UPDATE folders SET name = ?, path = ? WHERE path = ?", (new_name, new_path, old_path))
             
-            #Safely swap the base paths for all nested subfolders and tags using BOTH slash types
-            old_base_f = f"{old_path}/"
-            new_base_f = f"{new_path}/"
-            old_base_b = f"{old_path}\\"
-            new_base_b = f"{new_path}\\"
+            # Normalize the bases with an OS-specific slash
+            norm_old_base = os.path.normpath(old_path) + os.sep
+            norm_new_base = os.path.normpath(new_path) + os.sep
             
-            #Subfolders (Forward slash & Backslash)
-            cursor.execute("UPDATE folders SET path = REPLACE(path, ?, ?) WHERE path LIKE ?", (old_base_f, new_base_f, old_base_f + '%'))
-            cursor.execute("UPDATE folders SET path = REPLACE(path, ?, ?) WHERE path LIKE ?", (old_base_b, new_base_b, old_base_b + '%'))
-            
-            #Tags (Forward slash & Backslash)
-            cursor.execute("UPDATE tags SET image_path = REPLACE(image_path, ?, ?) WHERE image_path LIKE ?", (old_base_f, new_base_f, old_base_f + '%'))
-            cursor.execute("UPDATE tags SET image_path = REPLACE(image_path, ?, ?) WHERE image_path LIKE ?", (old_base_b, new_base_b, old_base_b + '%'))
-            
+            #Update all subfolders safely using Python path normalization
+            cursor.execute("SELECT id, path FROM folders")
+            for row_id, f_path in cursor.fetchall():
+                norm_f = os.path.normpath(f_path)
+                if norm_f.startswith(norm_old_base):
+                    updated_path = norm_f.replace(norm_old_base, norm_new_base, 1)
+                    cursor.execute("UPDATE folders SET path = ? WHERE id = ?", (updated_path, row_id))
+                    
+            #Update all image tags safely
+            cursor.execute("SELECT id, image_path FROM tags")
+            for row_id, img_path in cursor.fetchall():
+                norm_img = os.path.normpath(img_path)
+                if norm_img.startswith(norm_old_base):
+                    updated_img = norm_img.replace(norm_old_base, norm_new_base, 1)
+                    cursor.execute("UPDATE tags SET image_path = ? WHERE id = ?", (updated_img, row_id))
+                    
             self.conn.commit()
         except Exception as e:
             self.conn.rollback()
-            print(f"Failed to rename folder in DB: {e}")
+            print(f"Failed to rename folder safely in DB: {e}")
     #Replace all images existing tags for new ones
     def update_image_tags(self, image_path, new_tags_list):
         cursor = self.conn.cursor()
         try:
-            # remove the old tags for this specific image
+            #remove the old tags for this specific image
             cursor.execute("DELETE FROM tags WHERE image_path = ?", (image_path,))
             
             # insert the new ones

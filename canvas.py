@@ -7,7 +7,7 @@ from PyQt6 import QtCore
 from PyQt6.QtWidgets import QFrame, QMenu,QListWidgetItem,QVBoxLayout,QStackedWidget,QMessageBox,QLabel,QListWidget,QProgressBar
 from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal,QUrl,QMimeData
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap,QDrag,QIcon,QContextMenuEvent
-
+from PIL import Image
 #multi threading to stop UI freezing when loading large folders
 
 class ImageLoaderThread(QThread):
@@ -48,7 +48,18 @@ class ImageLoaderThread(QThread):
                 return
                 
             ext = os.path.splitext(full_path)[1].lower()
-            if ext in self.valid_extensions and os.path.exists(full_path):
+            #make sure file exists and is larger than 0 bytes before turning into thumbnail
+            if ext in self.valid_extensions and os.path.exists(full_path) and os.path.getsize(full_path)>0:
+                
+                #verify file is real and not corrupt
+                try:
+                    with Image.open(full_path) as verify_img:
+                        verify_img.verify()
+                except Exception:
+                    print(f"Canvas blocked corrupted UI file: {full_path}")
+                    continue #skip the file so QImage doesnt crash
+                
+                
                 
                 #Cache: turn file path into a unique hash
                 path_bytes = full_path.encode('utf-8')

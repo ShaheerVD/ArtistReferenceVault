@@ -1,8 +1,5 @@
 import os
 
-# Disable console loading bars because we have no console
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-
 import sys
 import time
 import traceback
@@ -16,6 +13,10 @@ from PIL import Image
 import onnxruntime as ort
 from huggingface_hub import hf_hub_download
 from PyQt6.QtCore import QThread, pyqtSignal
+
+from huggingface_hub.utils.tqdm import disable_progress_bars
+
+disable_progress_bars()
 
 class AITaggerWorker(QThread):
     # emit the image path and list of generated tags
@@ -137,6 +138,14 @@ class AITaggerWorker(QThread):
                     self.load_engine()
                 if self.session is None:
                     continue
+                
+                #protect PIL from corrupted files
+                if os.path.getsize(image_path) == 0:
+                    print(f"Skipping corrupted 0-byte file: {image_path}")
+                    self.inbox.task_done()
+                    self.queue_updated.emit(self.inbox.qsize())
+                    continue
+                
                 # open image and convert to rgb
                 image = Image.open(image_path).convert("RGB")
                 

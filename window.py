@@ -12,7 +12,7 @@ from PyQt6.QtCore import Qt,QThread,pyqtSignal,QTimer,QStringListModel,QUrl
 from canvas import DropCanvas
 from database import DatabaseManager
 from PyQt6.QtGui import QContextMenuEvent, QMouseEvent,QPixmap,QIcon,QDesktopServices
-
+from PIL import Image
 
 
 #This class will work in the background and find untagged images when the app is opened
@@ -40,6 +40,18 @@ class BackgroundCrawlerThread(QThread):
                     ext=os.path.splitext(file)[1].lower()
                     if ext in self.valid_extensions:
                         full_path = os.path.join(root,file)
+                        
+                        #Don't send corrupted files to the AI
+                        if os.path.getsize(full_path) > 0:
+                            try:
+                                with Image.open(full_path) as verify_img:
+                                    verify_img.verify()
+                            except Exception:
+                                print(f"Crawler blocked corrupted AI file: {full_path}")
+                                continue
+                        else:
+                            continue
+                        
                         
                         #check if DB already knows about the image
                         existing_tags = self.db.get_tags_for_image(full_path)
@@ -134,7 +146,7 @@ class ReferenceVault(QMainWindow):
         self.db = DatabaseManager() 
         
         #update checker
-        self.CURRENT_VERSION = "v1.0.3" 
+        self.CURRENT_VERSION = "v1.0.4" 
         
         self.update_checker = UpdateCheckerThread(self.CURRENT_VERSION)
         self.update_checker.update_available.connect(self.show_update_dialog)
@@ -624,7 +636,7 @@ class ReferenceVault(QMainWindow):
     
     def open_lightbox(self,item):
         #get file path attatched to a image that is double clicked by the user
-        image_path = item.data(0,Qt.ItemDataRole.UserRole)
+        image_path = item.data(Qt.ItemDataRole.UserRole)
         
         if image_path and os.path.exists(image_path):
             #spawn viewer
